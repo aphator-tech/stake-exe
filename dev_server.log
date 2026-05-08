@@ -1,0 +1,11 @@
+
+> bot@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.6 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://192.168.0.2:3000
+✓ Ready in 550ms
+
+ GET / 200 in 3.4s (next.js: 3.1s, application-code: 242ms)
+ GET / 200 in 127ms (next.js: 8ms, application-code: 119ms)
