@@ -3,12 +3,14 @@ import { Currency } from '@/types/stake';
 
 export class StakeClient {
   private client: GraphQLClient;
-  private endpoint = 'https://api.stake.ac/graphql';
+  // Based on user feedback, the correct endpoint is /_api/graphql on the same origin or stake.ac
+  private endpoint = 'https://stake.ac/_api/graphql';
 
   constructor(private apiToken: string) {
     this.client = new GraphQLClient(this.endpoint, {
       headers: {
         'x-access-token': this.apiToken,
+        'content-type': 'application/json',
       },
     });
   }
