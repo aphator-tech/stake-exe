@@ -6,6 +6,7 @@ export interface StrategyConfig {
   maxBet: number;
   profitTarget: number;
   baseMultiplier: number;
+  isAutonomous: boolean;
 }
 
 export interface BotState {
@@ -14,6 +15,8 @@ export interface BotState {
   totalProfit: number;
   isRunning: boolean;
   history: number[];
+  mode: 'Conservative' | 'Aggressive' | 'Recovery' | 'Wait';
+  confidence: number;
 }
 
 export class StrategyEngine {
@@ -28,72 +31,99 @@ export class StrategyEngine {
       totalProfit: 0,
       isRunning: false,
       history: [],
+      mode: 'Conservative',
+      confidence: 50,
     };
   }
 
   /**
-   * Smart Brain Logic:
-   * Analyzes history and balance to maximize long-term survival and steady growth.
+   * FULL AUTONOMOUS BRAIN
+   * Decides bet size, multiplier, and whether to play at all based on balance and history.
    */
-  calculateNextBet(balance: number, lastResult?: { won: boolean; multiplier: number }): { amount: number; targetMultiplier: number } {
-    // Determine dynamic base bet based on 0.1% of balance if not specified
-    const dynamicBase = Math.max(this.config.initialBet, Math.floor(balance * 0.001));
-
-    if (!lastResult) {
-      this.state.currentBet = dynamicBase;
-      return { amount: this.state.currentBet, targetMultiplier: this.config.baseMultiplier };
-    }
-
-    if (lastResult.won) {
-      this.state.consecutiveLosses = 0;
-      // Reset to dynamic base after win
-      this.state.currentBet = dynamicBase;
-    } else {
-      this.state.consecutiveLosses++;
-
-      // Smart Martingale: Only increase if we haven't hit maxBet
-      // We use a 2.1x multiplier to cover the 2x target and small fees/slippage
-      const nextBet = this.state.currentBet * 2.1;
-
-      if (nextBet > this.config.maxBet || nextBet > balance) {
-        // Reset to base if we hit limits to prevent total bust
-        this.state.currentBet = dynamicBase;
+  calculateNextBet(balance: number, lastResult?: { won: boolean; amount: number; payout: number }): {
+    amount: number;
+    targetMultiplier: number;
+    shouldSkip: boolean;
+  } {
+    // 1. Update Internal State based on result
+    if (lastResult) {
+      this.state.totalProfit += (lastResult.payout - lastResult.amount);
+      if (lastResult.won) {
         this.state.consecutiveLosses = 0;
+        this.state.mode = 'Conservative';
       } else {
-        this.state.currentBet = nextBet;
+        this.state.consecutiveLosses++;
+        if (this.state.consecutiveLosses > 3) this.state.mode = 'Recovery';
       }
     }
 
-    // Adaptive Multiplier based on history
+    // 2. ANALYZE HISTORY (The Brain)
+    const recent = this.state.history.slice(-20);
+    const avgCrash = recent.reduce((a, b) => a + b, 0) / (recent.length || 1);
+    const lowCrashes = recent.filter(m => m < 1.5).length;
+
+    // Confidence calculation (0-100)
+    // High low-crashes count = lower confidence
+    this.state.confidence = Math.max(0, 100 - (lowCrashes * 10));
+
+    // Decision: Should we skip?
+    // If the last 3 games were below 1.2x, history is "toxic", wait for a recovery.
+    const toxicStreak = recent.slice(-3).every(m => m < 1.2) && recent.length >= 3;
+    const shouldSkip = toxicStreak || this.state.confidence < 20;
+
+    // 3. DECIDE BET SIZE
+    let betAmount = this.config.initialBet;
+    if (this.config.isAutonomous) {
+      // Auto-scale: Base bet is 0.05% of balance for high safety
+      betAmount = Math.max(1, Math.floor(balance * 0.0005));
+    }
+
+    if (this.state.mode === 'Recovery') {
+      // Smart recovery: Use 2.1x but cap it at 1% of balance to avoid bust
+      const recoveryBet = this.state.currentBet * 2.1;
+      const safetyCap = balance * 0.01;
+      betAmount = Math.min(recoveryBet, safetyCap);
+    }
+
+    this.state.currentBet = betAmount;
+
+    // 4. DECIDE TARGET MULTIPLIER
     let targetMultiplier = this.config.baseMultiplier;
+    if (this.config.isAutonomous) {
+      if (avgCrash > 3) {
+        // "Hot" table, aim for a safer 1.8x to lock in wins
+        targetMultiplier = 1.8;
+      } else if (lowCrashes > 5) {
+        // "Cold" table, target 2.5x with small bets to catch a bounce
+        targetMultiplier = 2.5;
+        this.state.currentBet = Math.max(1, Math.floor(betAmount * 0.5));
+      } else {
+        targetMultiplier = 2.0;
+      }
+    }
 
-    // Analyze recent 10 games
-    const recent = this.state.history.slice(-10);
-    const lowCrashes = recent.filter(m => m < 2).length;
-
-    if (lowCrashes > 7) {
-      // If last 7/10 games crashed below 2x, "Red Mode" - be more conservative
-      targetMultiplier = 1.5;
-    } else if (lowCrashes < 3 && recent.length === 10) {
-      // If history is "Hot" (many high crashes), aim slightly higher
-      targetMultiplier = 2.5;
+    // Final Overrides
+    if (this.state.currentBet > this.config.maxBet) {
+       this.state.currentBet = this.config.initialBet;
+       this.state.mode = 'Conservative';
     }
 
     return {
       amount: Math.max(1, Math.floor(this.state.currentBet)),
       targetMultiplier: targetMultiplier,
+      shouldSkip: shouldSkip
     };
   }
 
   addHistory(multiplier: number) {
+    // Avoid duplicates if polling caught the same game
+    if (this.state.history.length > 0 && this.state.history[this.state.history.length - 1] === multiplier) {
+      return;
+    }
     this.state.history.push(multiplier);
     if (this.state.history.length > 100) {
       this.state.history.shift();
     }
-  }
-
-  updateProfit(payout: number, amount: number) {
-    this.state.totalProfit += (payout - amount);
   }
 
   getState() {
